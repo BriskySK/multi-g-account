@@ -17,6 +17,16 @@ export interface ParsedMessage {
   snippet?: string;
   body?: string;
   bodyType?: "text/plain" | "text/html";
+  attachments: AttachmentMeta[];
+}
+
+export interface AttachmentMeta {
+  /** Pass to gmail_get_attachment along with the message id. */
+  attachmentId: string;
+  filename: string;
+  mimeType?: string;
+  /** Size in bytes as reported by Gmail. */
+  size?: number;
 }
 
 function header(payload: gmail_v1.Schema$MessagePart | undefined, name: string): string | undefined {
@@ -45,6 +55,26 @@ function extractBody(part: gmail_v1.Schema$MessagePart | undefined): { body: str
   return html !== undefined ? { body: html, type: "text/html" } : undefined;
 }
 
+/** Walks the MIME tree collecting parts that carry a filename + attachmentId (actual attachments, not inline body parts). */
+function collectAttachments(part: gmail_v1.Schema$MessagePart | undefined): AttachmentMeta[] {
+  if (!part) return [];
+  const attachments: AttachmentMeta[] = [];
+  const stack: gmail_v1.Schema$MessagePart[] = [part];
+  while (stack.length > 0) {
+    const current = stack.shift()!;
+    if (current.filename && current.body?.attachmentId) {
+      attachments.push({
+        attachmentId: current.body.attachmentId,
+        filename: current.filename,
+        mimeType: current.mimeType ?? undefined,
+        size: current.body.size ?? undefined,
+      });
+    }
+    if (current.parts) stack.push(...current.parts);
+  }
+  return attachments;
+}
+
 export function parseMessage(message: gmail_v1.Schema$Message): ParsedMessage {
   const extracted = extractBody(message.payload ?? undefined);
   return {
@@ -59,7 +89,19 @@ export function parseMessage(message: gmail_v1.Schema$Message): ParsedMessage {
     snippet: message.snippet ?? undefined,
     body: extracted?.body,
     bodyType: extracted?.type,
+    attachments: collectAttachments(message.payload ?? undefined),
   };
+}
+
+/** Downloads one attachment's raw bytes via the Gmail API. Gmail encodes attachment data as base64url. */
+export async function getAttachmentBytes(
+  gmail: gmail_v1.Gmail,
+  messageId: string,
+  attachmentId: string,
+): Promise<Buffer> {
+  const res = await gmail.users.messages.attachments.get({ userId: "me", messageId, id: attachmentId });
+  if (!res.data.data) throw new Error("Gmail returned no attachment data.");
+  return Buffer.from(res.data.data, "base64url");
 }
 
 export interface OutgoingMessage {

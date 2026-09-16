@@ -19,6 +19,7 @@
     "express": "^5.2.1",
     "express-rate-limit": "^8.7.0",
     "googleapis": "^180.0.0",
+    "pdf-parse": "^1.1.4",
     "zod": "^3.25.76"
   },
   "devDependencies": {

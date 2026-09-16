@@ -1,7 +1,12 @@
 import { z } from "zod";
+import pdfParse from "pdf-parse";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { buildRawMessage, gmailClient, parseMessage } from "../google/gmail.js";
+import { buildRawMessage, getAttachmentBytes, gmailClient, parseMessage } from "../google/gmail.js";
 import { guarded, jsonResult, type Deps } from "./util.js";
+
+/** PDF text is sliced to this many characters per call so one attachment can't blow up a response or the container's memory. */
+const DEFAULT_ATTACHMENT_MAX_CHARS = 15_000;
+const PDF_MAGIC_BYTES = Buffer.from("%PDF");
 
 const account = z.string().describe("Email address of the connected account to act as");
 
@@ -38,7 +43,9 @@ export function registerGmailTools(server: McpServer, deps: Deps): void {
   server.registerTool(
     "gmail_get_message",
     {
-      description: "Fetch a single Gmail message by id: headers, labels, and decoded body.",
+      description:
+        "Fetch a single Gmail message by id: headers, labels, decoded body, and a list of attachments " +
+        "(filename, mimeType, size, attachmentId). Use gmail_get_attachment to read a PDF attachment's content.",
       inputSchema: { account, id: z.string().describe("Message id") },
     },
     guarded("gmail_get_message", async (args: { account: string; id: string }) => {
@@ -174,6 +181,50 @@ export function registerGmailTools(server: McpServer, deps: Deps): void {
           requestBody: { addLabelIds: args.add_label_ids, removeLabelIds: args.remove_label_ids },
         });
         return jsonResult({ id: res.data.id, labelIds: res.data.labelIds });
+      },
+    ),
+  );
+
+  server.registerTool(
+    "gmail_get_attachment",
+    {
+      description:
+        "Read the text content of a PDF attachment on a Gmail message (attachment ids come from " +
+        "gmail_get_message/gmail_get_thread). Only PDF attachments are supported. Long PDFs are truncated to " +
+        "a chunk of text at a time — check `truncated` in the result and pass a higher `offset` to read on.",
+      inputSchema: {
+        account,
+        message_id: z.string(),
+        attachment_id: z.string(),
+        offset: z.number().int().min(0).default(0).describe("Character offset into the extracted text to start from"),
+        max_chars: z
+          .number()
+          .int()
+          .min(1000)
+          .max(50_000)
+          .default(DEFAULT_ATTACHMENT_MAX_CHARS)
+          .describe("Maximum characters of extracted text to return in this call"),
+      },
+    },
+    guarded(
+      "gmail_get_attachment",
+      async (args: { account: string; message_id: string; attachment_id: string; offset: number; max_chars: number }) => {
+        const gmail = gmailClient(deps.auth.getClientFor(args.account, ["gmail_read"]));
+        const bytes = await getAttachmentBytes(gmail, args.message_id, args.attachment_id);
+        if (!bytes.subarray(0, 4).equals(PDF_MAGIC_BYTES)) {
+          throw new Error("Only PDF attachments are supported (this file's content doesn't start with a PDF header).");
+        }
+        const parsed = await pdfParse(bytes);
+        const totalChars = parsed.text.length;
+        const slice = parsed.text.slice(args.offset, args.offset + args.max_chars);
+        return jsonResult({
+          pages: parsed.numpages,
+          totalChars,
+          offset: args.offset,
+          returnedChars: slice.length,
+          truncated: args.offset + slice.length < totalChars,
+          text: slice,
+        });
       },
     ),
   );
