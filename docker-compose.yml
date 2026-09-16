@@ -1,0 +1,31 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Inside the container the DB always lives on the mounted volume.
+      DB_PATH: /app/data/multi-g-account.db
+    volumes:
+      - ./data:/app/data
+    # No ports: — only Caddy can reach the app, over the internal network.
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"     # Let's Encrypt HTTP challenge + redirect to HTTPS
+      - "443:443"
+    environment:
+      # Domain Caddy serves and obtains a certificate for, e.g. mcp.example.com
+      MCP_DOMAIN: ${MCP_DOMAIN:?Set MCP_DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
+volumes:
+  caddy_data:
+  caddy_config:
