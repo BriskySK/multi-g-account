@@ -185,6 +185,34 @@ them one at a time and sign in with a different Google account for each.
   -H 'content-type: application/json' -H 'x-api-key: <your key>' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'`
   should return your tool list, not a `401`.
 
+## Managing accounts
+
+Account tools (`list_accounts`, `add_account`, `remove_account`) aren't run from a terminal — they're MCP tools, so you trigger them by asking Claude in chat once the connector is set up (step 3 above).
+
+### Add a new account
+
+Ask Claude, e.g. "connect my other Gmail with full access and calendar full". Claude calls `add_account` and returns a single-use Google OAuth URL (10-minute TTL) — open it, sign in with the Google account to add, approve the requested scopes. It shows up in `list_accounts` right after.
+
+### Remove an account
+
+Ask Claude to remove it, e.g. "remove someone@gmail.com from multi-g". This deletes its tokens from the server's database only. The grant still shows under the Google account's own **Third-party access** until revoked there too — `remove_account`'s result includes the direct link ([myaccount.google.com/permissions](https://myaccount.google.com/permissions)).
+
+### Rotate an account (fix `invalid_grant`)
+
+`invalid_grant` on a `gmail_*`/`calendar_*` call means Google rejected the stored refresh token — `list_accounts` won't catch this, since it only checks the local DB, not Google. Common causes:
+
+- account password changed, or access revoked manually at myaccount.google.com/permissions
+- OAuth consent screen still in **Testing** publishing status → refresh tokens for test users can be pruned by Google after 6 months of inactivity
+- the Google Cloud OAuth client's `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` was regenerated in Cloud Console — old refresh tokens are only valid for the client they were issued to
+
+Fix is the same regardless of cause — re-mint the refresh token:
+
+1. Ask Claude to `remove_account` the broken account (or all of them, if they all fail at once — that pattern points at the OAuth client itself having changed, not one account).
+2. Ask Claude to `add_account` again with the same scopes as before (check `list_accounts` output before removing if unsure what was granted).
+3. Open the returned URL, sign in as that account, approve.
+
+Rotating the API key (`MCP_API_KEY`, the connector's `x-api-key` header) is unrelated and doesn't need any of this — that key only guards the `/mcp` endpoint itself and is never sent to or checked by Google. See "Connects, but tool calls fail as unauthorized" above for that one.
+
 ## Security model
 
 - **Server auth**: every `/mcp` request must carry the API key; comparison is constant-time. `/oauth/callback` is protected by single-use, 10-minute-TTL `state` values instead.
