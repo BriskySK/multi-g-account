@@ -57,7 +57,15 @@ Every deployment needs its own OAuth client. In **Testing** mode no app verifica
    - Click **Create**.
 5. A dialog shows **Client ID** and **Client secret** — copy both immediately into `.env` as `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`. (You can also re-open them later from the Credentials page.)
 
-> Signing in shows a "Google hasn't verified this app" warning — expected in Testing mode. Click *Continue*. Refresh tokens for test-mode apps are long-lived for test users but can be revoked by Google after 6 months of inactivity; reconnecting with `add_account` fixes that.
+> Signing in shows a "Google hasn't verified this app" warning — expected in Testing mode. Click *Continue*.
+>
+> **Testing-status apps: refresh tokens expire after 7 days**, regardless of activity — this is a hard Google
+> policy for unverified/Testing OAuth consent screens, not a bug here. Expect every connected account to need
+> `remove_account` + `add_account` again about once a week. If that's too often, click **Publish App** on the
+> consent screen (Google does not require verification review for the `gmail.modify`/`gmail.send`/`calendar`
+> scopes this server uses — Publishing alone removes the 7-day limit; you'll still see the "unverified app"
+> warning on sign-in, which is fine for personal/internal use). Separately, any refresh token — Testing or
+> Published — is pruned by Google after ~6 months of the app not using it at all.
 
 ## 2. Deploy on your own domain
 
@@ -199,15 +207,16 @@ Ask Claude to remove it, e.g. "remove someone@gmail.com from multi-g". This dele
 
 ### Rotate an account (fix `invalid_grant`)
 
-`invalid_grant` on a `gmail_*`/`calendar_*` call means Google rejected the stored refresh token — `list_accounts` won't catch this, since it only checks the local DB, not Google. Common causes:
+`invalid_grant` on a `gmail_*`/`calendar_*` call means Google rejected the stored refresh token — `list_accounts` won't catch this, since it only checks the local DB, not Google. Causes, roughly most → least likely:
 
-- account password changed, or access revoked manually at myaccount.google.com/permissions
-- OAuth consent screen still in **Testing** publishing status → refresh tokens for test users can be pruned by Google after 6 months of inactivity
-- the Google Cloud OAuth client's `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` was regenerated in Cloud Console — old refresh tokens are only valid for the client they were issued to
+- **OAuth consent screen still in Testing publishing status** — its refresh tokens expire after 7 days flat (see the note in step 1 above). This is by far the most common cause and the only one that typically hits *every* connected account at once, since they all share the same OAuth client. Fix: reconnect (below) — or click **Publish App** on the consent screen to stop it from recurring weekly.
+- the Google Cloud OAuth client's `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` was regenerated in Cloud Console — old refresh tokens are only valid for the client they were issued to. Also hits all accounts at once.
+- account password changed, or access revoked manually at myaccount.google.com/permissions — hits only that one account.
+- refresh token unused for ~6 months and pruned by Google — rare in practice, since any tool call refreshes it.
 
 Fix is the same regardless of cause — re-mint the refresh token:
 
-1. Ask Claude to `remove_account` the broken account (or all of them, if they all fail at once — that pattern points at the OAuth client itself having changed, not one account).
+1. Ask Claude to `remove_account` the broken account (or all of them, if they all fail at once — that pattern points at the OAuth client/Testing-mode expiry above, not one account's own credentials).
 2. Ask Claude to `add_account` again with the same scopes as before (check `list_accounts` output before removing if unsure what was granted).
 3. Open the returned URL, sign in as that account, approve.
 
@@ -238,4 +247,4 @@ Stack: TypeScript, [`@modelcontextprotocol/sdk`](https://github.com/modelcontext
 
 ## License
 
-MIT
+[MIT](LICENSE)
